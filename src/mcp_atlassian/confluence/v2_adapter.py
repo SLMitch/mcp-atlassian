@@ -146,6 +146,41 @@ class ConfluenceV2Adapter:
                 logger.error(f"Error creating page '{title}': {e}")
             raise ValueError(f"Failed to create page '{title}': {e}") from e
 
+    def create_folder(
+        self,
+        space_key: str,
+        title: str,
+        parent_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Create a folder using the v2 API (POST /api/v2/folders)."""
+        try:
+            space_id = self._get_space_id(space_key)
+
+            data: dict[str, Any] = {
+                "spaceId": space_id,
+                "title": title,
+            }
+            if parent_id:
+                data["parentId"] = parent_id
+
+            url = f"{self.base_url}/api/v2/folders"
+            response = self.session.post(url, json=data)
+            response.raise_for_status()
+
+            result = response.json()
+            logger.debug(f"Successfully created folder '{title}' with v2 API")
+            return result
+
+        except Exception as e:
+            if isinstance(e, HTTPError) and e.response is not None:
+                logger.error(
+                    f"HTTP error creating folder '{title}': {e}\n"
+                    f"Response: {e.response.text}"
+                )
+            else:
+                logger.error(f"Error creating folder '{title}': {e}")
+            raise ValueError(f"Failed to create folder '{title}': {e}") from e
+
     def _get_page_version(self, page_id: str) -> int:
         """Get the current version number of a page.
 

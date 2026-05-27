@@ -3017,6 +3017,45 @@ async def copy_page(
 
 
 @confluence_mcp.tool(
+    tags={"confluence", "write", "toolset:confluence_pages"},
+    annotations={"title": "Create Folder", "destructiveHint": False},
+)
+@check_write_access
+async def create_folder(
+    ctx: Context,
+    space_key: Annotated[
+        str,
+        Field(
+            description="The key of the space to create the folder in (usually a short uppercase code like 'DEV', 'TEAM', or 'DOC')"
+        ),
+    ],
+    title: Annotated[str, Field(description="The title of the folder")],
+    parent_id: Annotated[
+        str | None,
+        Field(
+            description="(Optional) Parent page or folder ID.",
+            default=None,
+        ),
+        BeforeValidator(lambda x: str(x) if x is not None else None),
+    ] = None,
+) -> str:
+    """Create a new folder in a Confluence space."""
+    confluence_fetcher = await get_confluence_fetcher(ctx)
+
+    result = confluence_fetcher.create_folder(
+        space_key=space_key,
+        title=title,
+        parent_id=parent_id,
+    )
+
+    return json.dumps(
+        {"message": "Folder created successfully", "folder": result},
+        indent=2,
+        ensure_ascii=False,
+    )
+
+
+@confluence_mcp.tool(
     tags={"confluence", "read", "toolset:confluence_permissions"},
     annotations={"title": "Check Content Permissions", "readOnlyHint": True},
 )

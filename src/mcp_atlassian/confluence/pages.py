@@ -1065,6 +1065,32 @@ class PagesMixin(ConfluenceClient):
             version_comment=version_comment,
         )
 
+    @handle_auth_errors("Confluence API")
+    def create_folder(
+        self,
+        space_key: str,
+        title: str,
+        parent_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Create a folder in a Confluence space using the v2 API."""
+        try:
+            adapter = self._v2_adapter or ConfluenceV2Adapter(
+                session=self.confluence._session,
+                base_url=self.confluence.url,
+            )
+            return adapter.create_folder(
+                space_key=space_key,
+                title=title,
+                parent_id=parent_id,
+            )
+        except Exception as e:
+            logger.error(
+                f"Error creating folder '{title}' in space {space_key}: {str(e)}"
+            )
+            raise Exception(
+                f"Failed to create folder '{title}' in space {space_key}: {str(e)}"
+            ) from e
+
     def get_page_children(
         self,
         page_id: str,
