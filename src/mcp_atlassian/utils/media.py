@@ -1,6 +1,8 @@
 """Shared media type detection and attachment download utilities."""
 
 import base64
+import binascii
+import json
 import logging
 import mimetypes
 from collections.abc import Callable
@@ -136,3 +138,78 @@ def fetch_and_encode_attachment(
         mime_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
 
     return encoded, mime_type, actual_size
+
+
+def parse_base64_attachments(
+    attachments_base64: str | None,
+) -> list[dict[str, object]]:
+    """Parse and decode attachments supplied as base64 content.
+
+    Each entry must be an object with a ``filename`` and base64-encoded
+    ``content_base64``. Decoding happens here so the client layer only ever
+    deals with raw bytes, never with the server's filesystem.
+
+    Args:
+        attachments_base64: JSON array string of attachment objects, or None
+
+    Returns:
+        A list of ``{"filename": str, "content": bytes}`` dicts, empty if
+        nothing was supplied
+
+    Raises:
+        ValueError: If the JSON, an entry or a filename is invalid, or if the
+            content is undecodable, empty, or over ``ATTACHMENT_MAX_BYTES``
+    """
+    stripped = (attachments_base64 or "").strip()
+    if not stripped:
+        return []
+
+    try:
+        parsed = json.loads(stripped)
+    except json.JSONDecodeError as e:
+        msg = f"attachments_base64 is not valid JSON: {e}"
+        raise ValueError(msg) from e
+
+    if not isinstance(parsed, list):
+        raise ValueError(
+            "attachments_base64 must be a JSON array of attachment objects."
+        )
+
+    decoded: list[dict[str, object]] = []
+    for index, item in enumerate(parsed):
+        if not isinstance(item, dict):
+            raise ValueError(
+                f"attachments_base64[{index}] must be an object with "
+                "'filename' and 'content_base64'."
+            )
+
+        filename = item.get("filename")
+        if not filename or not isinstance(filename, str):
+            raise ValueError(f"attachments_base64[{index}] requires a 'filename'.")
+
+        content_base64 = item.get("content_base64")
+        if not isinstance(content_base64, str):
+            raise ValueError(
+                f"attachments_base64[{index}] ({filename}) requires 'content_base64'."
+            )
+
+        try:
+            content = base64.b64decode(content_base64, validate=True)
+        except (binascii.Error, ValueError) as e:
+            msg = (
+                f"attachments_base64[{index}] ({filename}) has invalid "
+                f"base64 content: {e}"
+            )
+            raise ValueError(msg) from e
+
+        if not content:
+            raise ValueError(f"attachments_base64[{index}] ({filename}) is empty.")
+        if len(content) > ATTACHMENT_MAX_BYTES:
+            raise ValueError(
+                f"attachments_base64[{index}] ({filename}) exceeds the "
+                f"{ATTACHMENT_MAX_BYTES // (1024 * 1024)} MiB inline limit."
+            )
+
+        decoded.append({"filename": filename, "content": content})
+
+    return decoded

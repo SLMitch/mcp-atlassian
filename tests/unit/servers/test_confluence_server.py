@@ -1436,6 +1436,85 @@ async def test_upload_attachment_invalid_base64(client, mock_confluence_fetcher)
 
 
 @pytest.mark.anyio
+async def test_upload_attachments_base64(client, mock_confluence_fetcher):
+    """Test uploading several attachments via base64 content (filesystem-free)."""
+    import base64
+
+    payload = json.dumps(
+        [
+            {"filename": "a.txt", "content_base64": base64.b64encode(b"aaa").decode()},
+            {"filename": "b.png", "content_base64": base64.b64encode(b"bbb").decode()},
+        ]
+    )
+
+    response = await client.call_tool(
+        "confluence_upload_attachments",
+        {"content_id": "123456", "attachments_base64": payload},
+    )
+
+    assert mock_confluence_fetcher.upload_attachment_from_content.call_count == 2
+    first = mock_confluence_fetcher.upload_attachment_from_content.call_args_list[0]
+    assert first.kwargs["filename"] == "a.txt"
+    assert first.kwargs["content"] == b"aaa"
+    mock_confluence_fetcher.upload_attachments.assert_not_called()
+
+    result_data = json.loads(response.content[0].text)
+    assert result_data["attachments"]["total"] == 2
+    assert len(result_data["attachments"]["uploaded"]) == 2
+    assert result_data["message"] == "Uploaded 2 of 2 attachment(s)"
+
+
+@pytest.mark.anyio
+async def test_upload_attachments_paths_and_base64(client, mock_confluence_fetcher):
+    """Test combining server-readable paths and base64 attachments."""
+    import base64
+
+    payload = json.dumps(
+        [{"filename": "c.txt", "content_base64": base64.b64encode(b"ccc").decode()}]
+    )
+
+    response = await client.call_tool(
+        "confluence_upload_attachments",
+        {
+            "content_id": "123456",
+            "file_paths": "/tmp/file1.txt,/tmp/file2.txt",
+            "attachments_base64": payload,
+        },
+    )
+
+    mock_confluence_fetcher.upload_attachments.assert_called_once_with(
+        content_id="123456",
+        file_paths=["/tmp/file1.txt", "/tmp/file2.txt"],
+        comment=None,
+        minor_edit=False,
+    )
+    mock_confluence_fetcher.upload_attachment_from_content.assert_called_once()
+
+    result_data = json.loads(response.content[0].text)
+    assert result_data["attachments"]["total"] == 3
+    assert len(result_data["attachments"]["uploaded"]) == 3
+
+
+@pytest.mark.anyio
+async def test_upload_attachments_requires_a_source(client, mock_confluence_fetcher):
+    """Test that upload_attachments needs file_paths and/or attachments_base64."""
+    with pytest.raises(Exception, match="'file_paths' and/or 'attachments_base64'"):
+        await client.call_tool(
+            "confluence_upload_attachments", {"content_id": "123456"}
+        )
+
+
+@pytest.mark.anyio
+async def test_upload_attachments_invalid_base64_json(client, mock_confluence_fetcher):
+    """Test that malformed attachments_base64 is rejected."""
+    with pytest.raises(Exception, match="not valid JSON"):
+        await client.call_tool(
+            "confluence_upload_attachments",
+            {"content_id": "123456", "attachments_base64": "[not json"},
+        )
+
+
+@pytest.mark.anyio
 async def test_delete_attachment(client, mock_confluence_fetcher):
     """Test deleting an attachment."""
     response = await client.call_tool(

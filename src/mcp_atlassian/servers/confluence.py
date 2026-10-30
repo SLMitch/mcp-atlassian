@@ -26,6 +26,7 @@ from mcp_atlassian.utils.media import (
     ATTACHMENT_MAX_BYTES,
     fetch_and_encode_attachment,
     is_image_attachment,
+    parse_base64_attachments,
 )
 
 logger = logging.getLogger(__name__)
@@ -1995,15 +1996,31 @@ async def upload_attachments(
         ),
     ],
     file_paths: Annotated[
-        str,
+        str | None,
         Field(
             description=(
-                "Comma-separated list of file paths to upload. Can be absolute or relative paths. "
+                "Comma-separated list of server-readable file paths to upload. Can be "
+                "absolute or relative paths. "
                 "Examples: './file1.pdf,./file2.png' or 'C:\\docs\\report.docx,D:\\image.jpg'. "
-                "All files uploaded with same comment/minor_edit settings."
-            )
+                "Remote or containerized servers cannot read client paths: use "
+                "'attachments_base64' instead. At least one of 'file_paths' or "
+                "'attachments_base64' is required; both may be combined."
+            ),
+            default=None,
         ),
-    ],
+    ] = None,
+    attachments_base64: Annotated[
+        str | None,
+        Field(
+            description=(
+                "(Optional) JSON array of {'filename', 'content_base64'} objects uploaded "
+                "without server filesystem access. Example: "
+                '\'[{"filename": "schema.png", "content_base64": "iVBORw0..."}]\'. '
+                "Each file is limited to 50 MiB."
+            ),
+            default=None,
+        ),
+    ] = None,
     comment: Annotated[
         str | None,
         Field(
@@ -2038,27 +2055,69 @@ async def upload_attachments(
     Args:
         ctx: The FastMCP context.
         content_id: The ID of the content to attach to.
-        file_paths: List of file paths to upload.
+        file_paths: Comma-separated server-readable file paths to upload.
+        attachments_base64: JSON array of base64-encoded attachments.
         comment: Optional comment for the attachments.
         minor_edit: Whether this is a minor edit.
 
     Returns:
         JSON string with upload results for each file.
     """
+    paths_list = [p.strip() for p in (file_paths or "").split(",") if p.strip()]
+    inline_attachments = parse_base64_attachments(attachments_base64)
+    if not paths_list and not inline_attachments:
+        raise ValueError("Provide 'file_paths' and/or 'attachments_base64'.")
+
     confluence_fetcher = await get_confluence_fetcher(ctx)
 
-    paths_list = [p.strip() for p in file_paths.split(",") if p.strip()]
+    results: dict = {
+        "success": True,
+        "content_id": content_id,
+        "total": 0,
+        "uploaded": [],
+        "failed": [],
+    }
+    if paths_list:
+        path_results = confluence_fetcher.upload_attachments(
+            content_id=content_id,
+            file_paths=paths_list,
+            comment=comment,
+            minor_edit=minor_edit,
+        )
+        if not path_results.get("success"):
+            return json.dumps(path_results, indent=2, ensure_ascii=False)
+        results["total"] += path_results.get("total", len(paths_list))
+        results["uploaded"].extend(path_results.get("uploaded", []))
+        results["failed"].extend(path_results.get("failed", []))
 
-    results = confluence_fetcher.upload_attachments(
-        content_id=content_id,
-        file_paths=paths_list,
-        comment=comment,
-        minor_edit=minor_edit,
-    )
+    for item in inline_attachments:
+        result = confluence_fetcher.upload_attachment_from_content(
+            content_id=content_id,
+            filename=str(item["filename"]),
+            content=bytes(item["content"]),
+            comment=comment,
+            minor_edit=minor_edit,
+        )
+        results["total"] += 1
+        if result.get("success"):
+            results["uploaded"].append(
+                {
+                    "filename": result.get("filename"),
+                    "size": result.get("size"),
+                    "id": result.get("id"),
+                }
+            )
+        else:
+            results["failed"].append(
+                {"filename": item["filename"], "error": result.get("error")}
+            )
 
     return json.dumps(
         {
-            "message": f"Uploaded {len(results)} attachment(s) successfully",
+            "message": (
+                f"Uploaded {len(results['uploaded'])} of {results['total']} "
+                "attachment(s)"
+            ),
             "attachments": results,
         },
         indent=2,
