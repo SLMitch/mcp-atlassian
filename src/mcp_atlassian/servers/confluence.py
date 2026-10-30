@@ -11,6 +11,7 @@ from typing import Annotated
 from urllib.parse import parse_qs, urlsplit
 
 from fastmcp import Context
+from fastmcp.server.dependencies import get_http_request
 from mcp.types import BlobResourceContents, EmbeddedResource, ImageContent, TextContent
 from pydantic import BeforeValidator, Field
 
@@ -27,6 +28,12 @@ from mcp_atlassian.utils.media import (
     fetch_and_encode_attachment,
     is_image_attachment,
     parse_base64_attachments,
+)
+from mcp_atlassian.utils.uploads import (
+    UPLOAD_TOKEN_HEADER,
+    UploadError,
+    get_upload_store,
+    public_base_url,
 )
 
 logger = logging.getLogger(__name__)
@@ -136,7 +143,11 @@ def _resolve_page_id(page_reference: str) -> str:
     return page_reference
 
 
-def _resolve_page_content(content: str | None, content_file: str | None) -> str:
+def _resolve_page_content(
+    content: str | None,
+    content_file: str | None,
+    content_upload_id: str | None = None,
+) -> str:
     """Resolve page body from either an inline string or a file path.
 
     Exactly one of ``content`` / ``content_file`` must be supplied. ``content_file``
@@ -159,6 +170,18 @@ def _resolve_page_content(content: str | None, content_file: str | None) -> str:
             workspace.
         OSError: If the file exists but cannot be read.
     """
+    if content_upload_id:
+        if content is not None or content_file:
+            raise ValueError(
+                "Provide only one of 'content', 'content_file' or 'content_upload_id'."
+            )
+        try:
+            _, data = get_upload_store().consume(content_upload_id)
+        except UploadError as e:
+            msg = f"content_upload_id: {e}"
+            raise ValueError(msg) from e
+        return data.decode("utf-8")
+
     has_content = content is not None
     has_file = content_file is not None and content_file != ""
     if has_content and has_file:
@@ -797,6 +820,18 @@ async def create_page(
             default=None,
         ),
     ] = None,
+    content_upload_id: Annotated[
+        str | None,
+        Field(
+            description=(
+                "(Optional) upload_id from confluence_request_upload whose "
+                "staged file (UTF-8) is the page body. For remote servers, "
+                "instead of 'content_file'. Mutually exclusive with 'content' "
+                "and 'content_file'."
+            ),
+            default=None,
+        ),
+    ] = None,
 ) -> str:
     """Create a new Confluence page.
 
@@ -834,7 +869,7 @@ async def create_page(
             "'markdown', 'wiki', 'storage', or 'xhtml'"
         )
 
-    resolved_content = _resolve_page_content(content, content_file)
+    resolved_content = _resolve_page_content(content, content_file, content_upload_id)
 
     # Determine parameters based on content format
     if content_format == "markdown":
@@ -972,6 +1007,18 @@ async def update_page(
             default=None,
         ),
     ] = None,
+    content_upload_id: Annotated[
+        str | None,
+        Field(
+            description=(
+                "(Optional) upload_id from confluence_request_upload whose "
+                "staged file (UTF-8) is the page body. For remote servers, "
+                "instead of 'content_file'. Mutually exclusive with 'content' "
+                "and 'content_file'."
+            ),
+            default=None,
+        ),
+    ] = None,
 ) -> str:
     """Update an existing Confluence page.
 
@@ -1011,7 +1058,7 @@ async def update_page(
             "'markdown', 'wiki', 'storage', or 'xhtml'"
         )
 
-    resolved_content = _resolve_page_content(content, content_file)
+    resolved_content = _resolve_page_content(content, content_file, content_upload_id)
 
     # Determine parameters based on content format
     if content_format == "markdown":
@@ -2120,6 +2167,152 @@ async def upload_attachments(
             ),
             "attachments": results,
         },
+        indent=2,
+        ensure_ascii=False,
+    )
+
+
+@confluence_mcp.tool(
+    tags={"confluence", "write", "attachments", "toolset:confluence_attachments"},
+    annotations={"title": "Request File Upload", "destructiveHint": False},
+)
+@check_write_access
+async def request_upload(
+    ctx: Context,
+    filename: Annotated[
+        str,
+        Field(
+            description=(
+                "Name the file will have once attached (e.g. 'diagram.png'). "
+                "Plain name only: no path, no '..'."
+            )
+        ),
+    ],
+) -> str:
+    """Open a slot to send a local file to the server without passing its bytes.
+
+    For remote (HTTP) servers that cannot read client paths. Step 1 of 2: run
+    the returned 'curl' command (replace <LOCAL_FILE>) to PUT the file, then
+    call confluence_upload_staged with the upload_id (or pass it as
+    content_upload_id to confluence_create_page / confluence_update_page).
+    The slot is single-use and expires after 'expires_in' seconds.
+
+    Args:
+        ctx: The FastMCP context.
+        filename: Attachment filename.
+
+    Returns:
+        JSON with upload_id, upload_url, upload_token, expires_in, max_bytes
+        and a ready-to-run curl command.
+    """
+    try:
+        request = get_http_request()
+        base = public_base_url(
+            request.url.scheme,
+            request.headers.get("host"),
+            request.headers.get("x-forwarded-proto"),
+            request.headers.get("x-forwarded-host"),
+        )
+    except RuntimeError:
+        # No HTTP request (stdio): only MCP_PUBLIC_BASE_URL can say where to PUT.
+        base = public_base_url("", None)
+
+    store = get_upload_store()
+    upload = store.request(filename)
+    upload_url = f"{base}/uploads/{upload.upload_id}"
+    return json.dumps(
+        {
+            "upload_id": upload.upload_id,
+            "upload_url": upload_url,
+            "upload_token": upload.token,
+            "filename": upload.filename,
+            "expires_in": store.ttl_seconds,
+            "max_bytes": store.max_bytes,
+            "curl": (
+                f'curl -sS --fail-with-body -T "<LOCAL_FILE>" '
+                f'-H "{UPLOAD_TOKEN_HEADER}: {upload.token}" "{upload_url}"'
+            ),
+        },
+        indent=2,
+        ensure_ascii=False,
+    )
+
+
+@confluence_mcp.tool(
+    tags={"confluence", "write", "attachments", "toolset:confluence_attachments"},
+    annotations={"title": "Attach Staged Upload", "destructiveHint": True},
+)
+@check_write_access
+async def upload_staged(
+    ctx: Context,
+    upload_id: Annotated[
+        str,
+        Field(description="upload_id returned by confluence_request_upload."),
+    ],
+    content_id: Annotated[
+        str,
+        Field(
+            description=(
+                "ID of the page or blog post to attach the file to. A file "
+                "with the same name becomes a new version."
+            )
+        ),
+    ],
+    filename: Annotated[
+        str | None,
+        Field(
+            description=(
+                "(Optional) Attachment name; defaults to the name given to "
+                "confluence_request_upload."
+            ),
+            default=None,
+        ),
+    ] = None,
+    comment: Annotated[
+        str | None,
+        Field(
+            description="(Optional) Comment for the attachment version.",
+            default=None,
+        ),
+    ] = None,
+    minor_edit: Annotated[
+        bool,
+        Field(
+            description="(Optional) If true, watchers are not notified.",
+            default=False,
+        ),
+    ] = False,
+) -> str:
+    """Attach a file previously PUT to the upload URL (step 2 of 2).
+
+    The staged file is deleted from the server afterwards, whatever the result.
+
+    Args:
+        ctx: The FastMCP context.
+        upload_id: Staged upload identifier.
+        content_id: Target page or blog post ID.
+        filename: Optional attachment name override.
+        comment: Optional version comment.
+        minor_edit: Whether this is a minor edit.
+
+    Returns:
+        JSON string with upload confirmation and attachment metadata.
+    """
+    try:
+        upload, data = get_upload_store().consume(upload_id)
+    except UploadError as e:
+        raise ValueError(str(e)) from e
+
+    confluence_fetcher = await get_confluence_fetcher(ctx)
+    result = confluence_fetcher.upload_attachment_from_content(
+        content_id=content_id,
+        filename=filename or upload.filename,
+        content=data,
+        comment=comment,
+        minor_edit=minor_edit,
+    )
+    return json.dumps(
+        {"message": "Attachment uploaded successfully", "attachment": result},
         indent=2,
         ensure_ascii=False,
     )

@@ -46,9 +46,42 @@ Upload multiple attachments to Confluence content in a single operation.
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `content_id` | `string` | Yes | The ID of the Confluence content (page or blog post) to attach files to. Example: '123456789'. If uploading multiple files with the same names, new versions will be created automatically. |
-| `file_paths` | `string` | Yes | Comma-separated list of file paths to upload. Can be absolute or relative paths. Examples: './file1.pdf,./file2.png' or 'C:\docs\report.docx,D:\image.jpg'. All files uploaded with same comment/minor_edit settings. |
+| `file_paths` | `string` | No | Comma-separated list of server-readable file paths to upload. Can be absolute or relative paths. Examples: './file1.pdf,./file2.png' or 'C:\docs\report.docx,D:\image.jpg'. Remote or containerized servers cannot read client paths: use 'attachments_base64' instead. At least one of 'file_paths' or 'attachments_base64' is required; both may be combined. |
+| `attachments_base64` | `string` | No | (Optional) JSON array of `{'filename', 'content_base64'}` objects uploaded without server filesystem access. Example: '[`{"filename": "schema.png", "content_base64": "iVBORw0..."}`]'. Each file is limited to 50 MiB. |
 | `comment` | `string` | No | (Optional) Comment for all uploaded attachments. Visible in version history. Example: 'Q4 2024 batch upload' |
 | `minor_edit` | `boolean` | No | (Optional) Whether this is a minor edit. If true, watchers are not notified. Default is false. |
+
+---
+
+### Request File Upload
+
+Open a slot to send a local file to the server without passing its bytes.
+
+<Note>This is a **write** tool. Disabled when `READ_ONLY_MODE=true`.</Note>
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `filename` | `string` | Yes | Name the file will have once attached (e.g. 'diagram.png'). Plain name only: no path, no '..'. |
+
+---
+
+### Attach Staged Upload
+
+Attach a file previously PUT to the upload URL (step 2 of 2).
+
+<Note>This is a **write** tool. Disabled when `READ_ONLY_MODE=true`.</Note>
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `upload_id` | `string` | Yes | upload_id returned by confluence_request_upload. |
+| `content_id` | `string` | Yes | ID of the page or blog post to attach the file to. A file with the same name becomes a new version. |
+| `filename` | `string` | No | (Optional) Attachment name; defaults to the name given to confluence_request_upload. |
+| `comment` | `string` | No | (Optional) Comment for the attachment version. |
+| `minor_edit` | `boolean` | No | (Optional) If true, watchers are not notified. |
 
 ---
 

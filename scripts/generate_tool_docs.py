@@ -123,6 +123,7 @@ CATEGORY_TOOLS: dict[str, list[str]] = {
         "confluence_get_page_restrictions",
         "confluence_set_page_restrictions",
         "confluence_get_page_diff",
+        "confluence_create_folder",
     ],
     "confluence-search": [
         "confluence_search",
@@ -131,6 +132,8 @@ CATEGORY_TOOLS: dict[str, list[str]] = {
     "confluence-attachments": [
         "confluence_upload_attachment",
         "confluence_upload_attachments",
+        "confluence_request_upload",
+        "confluence_upload_staged",
         "confluence_get_attachments",
         "confluence_download_attachment",
         "confluence_download_content_attachments",

@@ -39,6 +39,7 @@ from mcp_atlassian.utils.toolsets import (
     get_enabled_toolsets,
     should_include_tool_by_toolset,
 )
+from mcp_atlassian.utils.uploads import upload_put_endpoint
 from mcp_atlassian.utils.urls import is_atlassian_cloud_url, validate_url_for_ssrf
 
 from .client_storage import build_oauth_client_storage_from_env
@@ -929,3 +930,8 @@ async def _health_check_route(request: Request) -> JSONResponse:
 
 
 logger.info("Added /healthz endpoint for Kubernetes probes")
+
+
+@main_mcp.custom_route("/uploads/{upload_id}", methods=["PUT"], include_in_schema=False)
+async def _upload_route(request: Request) -> JSONResponse:
+    return await upload_put_endpoint(request)

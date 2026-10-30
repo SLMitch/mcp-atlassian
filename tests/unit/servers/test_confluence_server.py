@@ -251,12 +251,14 @@ def test_confluence_mcp(mock_confluence_fetcher, mock_base_confluence_config):
         get_space_page_tree,
         get_space_permissions,
         list_page_templates,
+        request_upload,
         search,
         search_user,
         update_page,
         update_page_section,
         upload_attachment,
         upload_attachments,
+        upload_staged,
     )
 
     @asynccontextmanager
@@ -292,6 +294,8 @@ def test_confluence_mcp(mock_confluence_fetcher, mock_base_confluence_config):
     confluence_sub_mcp.add_tool(search_user)
     confluence_sub_mcp.add_tool(upload_attachment)
     confluence_sub_mcp.add_tool(upload_attachments)
+    confluence_sub_mcp.add_tool(request_upload)
+    confluence_sub_mcp.add_tool(upload_staged)
     confluence_sub_mcp.add_tool(get_attachments)
     confluence_sub_mcp.add_tool(download_attachment)
     confluence_sub_mcp.add_tool(download_content_attachments)
@@ -334,12 +338,14 @@ def no_fetcher_test_confluence_mcp(mock_base_confluence_config):
         get_space_page_tree,
         get_space_permissions,
         list_page_templates,
+        request_upload,
         search,
         search_user,
         update_page,
         update_page_section,
         upload_attachment,
         upload_attachments,
+        upload_staged,
     )
 
     @asynccontextmanager
@@ -377,6 +383,8 @@ def no_fetcher_test_confluence_mcp(mock_base_confluence_config):
     confluence_sub_mcp.add_tool(search_user)
     confluence_sub_mcp.add_tool(upload_attachment)
     confluence_sub_mcp.add_tool(upload_attachments)
+    confluence_sub_mcp.add_tool(request_upload)
+    confluence_sub_mcp.add_tool(upload_staged)
     confluence_sub_mcp.add_tool(get_attachments)
     confluence_sub_mcp.add_tool(download_attachment)
     confluence_sub_mcp.add_tool(download_content_attachments)
@@ -1118,7 +1126,7 @@ async def test_update_page_accepts_empty_content(client, mock_confluence_fetcher
 
 
 def test_page_content_file_parameters_preserve_positional_order():
-    """content_file should not shift existing positional parameters."""
+    """content_file / content_upload_id must not shift positional parameters."""
     create_params = list(
         inspect.signature(confluence_server.create_page.__wrapped__).parameters
     )
@@ -1136,6 +1144,7 @@ def test_page_content_file_parameters_preserve_positional_order():
         "page_width",
         "table_layout",
         "subtype",
+        "content_upload_id",
     ]
 
     update_params = list(
@@ -1156,6 +1165,7 @@ def test_page_content_file_parameters_preserve_positional_order():
         "content_file",
         "page_width",
         "table_layout",
+        "content_upload_id",
     ]
 
 
@@ -1511,6 +1521,117 @@ async def test_upload_attachments_invalid_base64_json(client, mock_confluence_fe
         await client.call_tool(
             "confluence_upload_attachments",
             {"content_id": "123456", "attachments_base64": "[not json"},
+        )
+
+
+@pytest.fixture
+def staged_store(tmp_path, monkeypatch):
+    """Fresh upload store, and a public URL so request_upload works without HTTP."""
+    from mcp_atlassian.utils import uploads
+
+    store = uploads.UploadStore(tmp_path / "uploads")
+    monkeypatch.setattr(uploads, "_store", store)
+    monkeypatch.setenv("MCP_PUBLIC_BASE_URL", "https://mcp.example.com")
+    return store
+
+
+async def _stage(store, filename: str, data: bytes) -> str:
+    async def chunks():
+        yield data
+
+    upload = store.request(filename)
+    await store.receive(upload.upload_id, upload.token, chunks())
+    return upload.upload_id
+
+
+@pytest.mark.anyio
+async def test_request_upload(client, staged_store):
+    """request_upload returns a single-use PUT URL and a ready curl command."""
+    response = await client.call_tool(
+        "confluence_request_upload", {"filename": "schema.png"}
+    )
+    data = json.loads(response.content[0].text)
+    assert data["upload_url"] == (
+        f"https://mcp.example.com/uploads/{data['upload_id']}"
+    )
+    assert data["upload_token"] in data["curl"]
+    assert "-T" in data["curl"]
+    assert data["filename"] == "schema.png"
+    assert data["max_bytes"] == staged_store.max_bytes
+
+
+@pytest.mark.anyio
+async def test_request_upload_rejects_path(client, staged_store):
+    with pytest.raises(Exception, match="plain name"):
+        await client.call_tool("confluence_request_upload", {"filename": "../x.png"})
+
+
+@pytest.mark.anyio
+async def test_upload_staged(client, mock_confluence_fetcher, staged_store):
+    """upload_staged attaches the staged bytes and deletes the staged file."""
+    upload_id = await _stage(staged_store, "schema.png", b"PNGDATA")
+
+    response = await client.call_tool(
+        "confluence_upload_staged",
+        {"upload_id": upload_id, "content_id": "123456", "comment": "v2"},
+    )
+
+    mock_confluence_fetcher.upload_attachment_from_content.assert_called_once_with(
+        content_id="123456",
+        filename="schema.png",
+        content=b"PNGDATA",
+        comment="v2",
+        minor_edit=False,
+    )
+    assert json.loads(response.content[0].text)["attachment"]["id"] == "att123"
+    with pytest.raises(Exception, match="unknown upload_id"):
+        await client.call_tool(
+            "confluence_upload_staged",
+            {"upload_id": upload_id, "content_id": "123456"},
+        )
+
+
+@pytest.mark.anyio
+async def test_upload_staged_before_put(client, staged_store):
+    upload = staged_store.request("a.png")
+    with pytest.raises(Exception, match="PUT it"):
+        await client.call_tool(
+            "confluence_upload_staged",
+            {"upload_id": upload.upload_id, "content_id": "123456"},
+        )
+
+
+@pytest.mark.anyio
+async def test_create_page_with_content_upload_id(
+    client, mock_confluence_fetcher, staged_store
+):
+    body = "<p>Gros contenu é</p>"
+    upload_id = await _stage(staged_store, "page.xml", body.encode("utf-8"))
+
+    await client.call_tool(
+        "confluence_create_page",
+        {
+            "space_key": "TEST",
+            "title": "Staged",
+            "content_upload_id": upload_id,
+            "content_format": "storage",
+        },
+    )
+    assert mock_confluence_fetcher.create_page.call_args.kwargs["body"] == body
+
+
+@pytest.mark.anyio
+async def test_content_upload_id_is_exclusive(client, staged_store):
+    upload_id = await _stage(staged_store, "page.md", b"x")
+    with pytest.raises(Exception, match="only one of"):
+        await client.call_tool(
+            "confluence_update_page",
+            {
+                "page_id": "1",
+                "title": "T",
+                "content": "inline",
+                "content_upload_id": upload_id,
+            },
         )
 
 

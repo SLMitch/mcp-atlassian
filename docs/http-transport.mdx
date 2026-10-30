@@ -85,6 +85,40 @@ The `--stateless` flag is only supported with `streamable-http` transport. Using
   </Tab>
 </Tabs>
 
+## Uploading Files to a Remote Server
+
+A remote server cannot read the client's file paths (`file_path`, `content_file`),
+and inline base64 makes the model transcribe the whole file. Instead, files go
+from the client machine to the server directly, in two steps:
+
+1. `confluence_request_upload(filename)` returns an `upload_id`, an `upload_url`
+   and a ready-to-run `curl` command.
+2. The client runs it (`curl -T <file> -H "x-upload-token: …" <upload_url>`):
+   the bytes are PUT to `/uploads/{upload_id}`.
+3. `confluence_upload_staged(upload_id, content_id)` attaches the file (a new
+   version if the name exists) and deletes the staged copy. The same
+   `upload_id` can instead be passed as `content_upload_id` to
+   `confluence_create_page` / `confluence_update_page` for a large page body.
+
+The PUT route is outside the MCP endpoint: it is protected by a random,
+single-use token bound to the `upload_id`, not by the user's Atlassian
+credentials. Slots expire, accept one PUT only, and staged files are stored
+under random names with `0600` permissions.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MCP_PUBLIC_BASE_URL` | derived from the request (`X-Forwarded-Proto`/`-Host`, `Host`) | Base URL clients use to reach the server, e.g. `https://mcp.example.com` |
+| `MCP_UPLOAD_DIR` | `<tmp>/mcp-atlassian-uploads` | Where staged files are written |
+| `MCP_UPLOAD_MAX_BYTES` | `52428800` (50 MiB) | Maximum file size (`413` beyond) |
+| `MCP_UPLOAD_TTL_SECONDS` | `600` | Lifetime of an upload slot |
+
+<Warning>
+Upload slots live in the server process memory and on its local disk. Run a
+**single replica** (the Helm chart default), or use session affinity plus a
+shared `MCP_UPLOAD_DIR`, so the PUT and the follow-up tool call reach the same
+process.
+</Warning>
+
 ## Multi-User Authentication
 
 Both transport types support per-request authentication where each user provides their own credentials.

@@ -50,6 +50,7 @@ Create a new Confluence page.
 | `page_width` | `string` | No | (Optional) Page layout width. Options: 'full-width', 'default'. Defaults to null (Confluence default). |
 | `table_layout` | `string` | No | (Optional) Table width preset applied to all markdown tables. Options: 'full-width' (1800 px), 'wide' (960 px), 'default' (760 px). Only applies when content_format is 'markdown'. |
 | `subtype` | `string` | No | (Optional) Confluence page subtype. Use 'live' to create a Confluence Live Doc. Only supported for Confluence Cloud. |
+| `content_upload_id` | `string` | No | (Optional) upload_id from confluence_request_upload whose staged file (UTF-8) is the page body. For remote servers, instead of 'content_file'. Mutually exclusive with 'content' and 'content_file'. |
 **Example:**
 
 ```json
@@ -89,6 +90,7 @@ Update an existing Confluence page.
 | `content_file` | `string` | No | (Optional) Absolute or relative filesystem path to read the new page body from (UTF-8). Use this instead of 'content' when the body is too large to pass comfortably as a tool argument. Mutually exclusive with 'content'. |
 | `page_width` | `string` | No | (Optional) Page layout width. Options: 'full-width', 'default'. Defaults to null (preserve existing). |
 | `table_layout` | `string` | No | (Optional) Table width preset applied to all markdown tables. Options: 'full-width' (1800 px), 'wide' (960 px), 'default' (760 px). Only applies when content_format is 'markdown'. |
+| `content_upload_id` | `string` | No | (Optional) upload_id from confluence_request_upload whose staged file (UTF-8) is the page body. For remote servers, instead of 'content_file'. Mutually exclusive with 'content' and 'content_file'. |
 **Example:**
 
 ```json
@@ -303,5 +305,21 @@ Get a unified diff between two versions of a Confluence page.
 <Tip>
 Use `confluence_get_page_history` to discover available version numbers. The diff is in unified format, showing additions and removals between versions.
 </Tip>
+
+---
+
+### Create Folder
+
+Create a new folder in a Confluence space.
+
+<Note>This is a **write** tool. Disabled when `READ_ONLY_MODE=true`.</Note>
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `space_key` | `string` | Yes | The key of the space to create the folder in (usually a short uppercase code like 'DEV', 'TEAM', or 'DOC') |
+| `title` | `string` | Yes | The title of the folder |
+| `parent_id` | `string` | No | (Optional) Parent page or folder ID. |
 
 ---
