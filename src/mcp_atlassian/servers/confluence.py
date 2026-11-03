@@ -783,7 +783,10 @@ async def create_page(
                 "(Optional) Absolute or relative filesystem path to read the "
                 "page body from (UTF-8). Use this instead of 'content' when "
                 "the body is too large to pass comfortably as a tool "
-                "argument. Mutually exclusive with 'content'."
+                "argument. Mutually exclusive with 'content'. Only works when the "
+                "server can read this path (local stdio): on a remote (HTTP) "
+                "server it fails, so pass 'content' inline or use the two-step "
+                "'content_upload_id' (confluence_request_upload, then curl -T)."
             ),
             default=None,
         ),
@@ -980,7 +983,10 @@ async def update_page(
                 "(Optional) Absolute or relative filesystem path to read the "
                 "new page body from (UTF-8). Use this instead of 'content' "
                 "when the body is too large to pass comfortably as a tool "
-                "argument. Mutually exclusive with 'content'."
+                "argument. Mutually exclusive with 'content'. Only works when the "
+                "server can read this path (local stdio): on a remote (HTTP) "
+                "server it fails, so pass 'content' inline or use the two-step "
+                "'content_upload_id' (confluence_request_upload, then curl -T)."
             ),
             default=None,
         ),
@@ -1907,9 +1913,11 @@ async def upload_attachment(
                 "Full path to the file to upload. Can be absolute (e.g., '/home/user/document.pdf' or 'C:\\Users\\name\\file.docx') "
                 "or relative to the current working directory (e.g., './uploads/document.pdf'). "
                 "If a file with the same name already exists, a new version will be created. "
-                "Requires the server to be able to read the path; for remote or "
-                "containerized servers use 'content_base64' instead. Provide either "
-                "'file_path' or 'content_base64', not both."
+                "Requires the server to be able to read the path; on a remote or "
+                "containerized (HTTP) server it fails. There, prefer the two-step "
+                "upload (confluence_request_upload, run the returned curl, then "
+                "confluence_upload_staged), or 'content_base64' for tiny files. "
+                "Provide either 'file_path' or 'content_base64', not both."
             ),
             default=None,
         ),
@@ -2049,8 +2057,10 @@ async def upload_attachments(
                 "Comma-separated list of server-readable file paths to upload. Can be "
                 "absolute or relative paths. "
                 "Examples: './file1.pdf,./file2.png' or 'C:\\docs\\report.docx,D:\\image.jpg'. "
-                "Remote or containerized servers cannot read client paths: use "
-                "'attachments_base64' instead. At least one of 'file_paths' or "
+                "Remote or containerized servers cannot read client paths: use the "
+                "two-step upload (confluence_request_upload, run the returned curl, "
+                "then confluence_upload_staged, once per file) or "
+                "'attachments_base64' for tiny files. At least one of 'file_paths' or "
                 "'attachments_base64' is required; both may be combined."
             ),
             default=None,
@@ -2191,11 +2201,18 @@ async def request_upload(
 ) -> str:
     """Open a slot to send a local file to the server without passing its bytes.
 
-    For remote (HTTP) servers that cannot read client paths. Step 1 of 2: run
-    the returned 'curl' command (replace <LOCAL_FILE>) to PUT the file, then
-    call confluence_upload_staged with the upload_id (or pass it as
-    content_upload_id to confluence_create_page / confluence_update_page).
-    The slot is single-use and expires after 'expires_in' seconds.
+    For remote (HTTP) servers that cannot read client paths. Preferred over
+    base64, which makes the model write the whole file as output tokens.
+    Upload is always in 2 steps:
+      1. call confluence_request_upload(filename=...) - one file per call;
+      2. run the returned 'curl' command with Bash (replace <LOCAL_FILE>) to
+         PUT the file straight from the client to the server;
+      3. call confluence_upload_staged(upload_id=..., content_id=<page id>)
+         to attach it (a same-name file becomes a new version), or pass the
+         upload_id as content_upload_id to confluence_create_page /
+         confluence_update_page to use the file as the page body.
+    The slot is single-use, expires after 'expires_in' seconds (stage and
+    consume it right away) and is capped at 'max_bytes'.
 
     Args:
         ctx: The FastMCP context.
